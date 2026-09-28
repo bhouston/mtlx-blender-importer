@@ -1,6 +1,10 @@
-# Blender MaterialX Importer
+# MTLX Blender Importer
 
-Blender MaterialX Importer loads MaterialX documents into Blender materials.
+[![Discord](https://img.shields.io/badge/Discord-join%20the%20community-5865F2?logo=discord&logoColor=white)](https://discord.gg/wzQWaBBxup)
+
+Part of the [mtlx suite of tools](https://mtlx.ai) ([GitHub](https://github.com/bhouston/mtlx)).
+
+MTLX Blender Importer loads MaterialX documents into Blender materials.
 
 It is designed as a practical MaterialX-to-Blender compiler: the goal is a faithful Blender material that renders like the source, not a 1:1 reconstruction of every XML element or nodegraph detail from the original `.mtlx` file.
 
