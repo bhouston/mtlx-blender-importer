@@ -100,7 +100,7 @@ For one-off scripts, adding the checkout path is enough:
 
 ```python
 import sys
-sys.path.insert(0, "/path/to/blender-materialx-importer")
+sys.path.insert(0, "/path/to/mtlx-blender-importer")
 ```
 
 ## Public API
