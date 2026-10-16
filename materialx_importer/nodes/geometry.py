@@ -80,8 +80,14 @@ def _compile_geometry_category(context: CompileContext, category: str, space: st
         socket = blender_tangent_socket(context)
         if socket is None:
             return None
-        if space != "world":
-            socket = blender_world_to_object_direction_socket(context, socket, "VECTOR")
+        # Blender's Tangent node outputs object space, unlike the world-space Normal.
+        if space == "world":
+            transform = nodes.new(type="ShaderNodeVectorTransform")
+            transform.vector_type = "VECTOR"
+            transform.convert_from = "OBJECT"
+            transform.convert_to = "WORLD"
+            context.material.node_tree.links.new(socket, transform.inputs["Vector"])
+            socket = transform.outputs["Vector"]
         return blender_direction_to_materialx_socket(context, socket)
     if category == "bitangent":
         normal = compile_geometry_category(context, "normal", space)

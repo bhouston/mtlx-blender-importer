@@ -26,6 +26,7 @@ from ..document import (
     inherited_attribute,
     input_value,
     input_value_or_default,
+    is_connected,
     type_name,
 )
 from ..types import CompileContext, CompiledSocket
@@ -33,6 +34,7 @@ from ..values import component_count, parse_float, resolve_asset_path
 from .geometry import (
     blender_world_direction_to_materialx_socket,
     compile_geometry_category,
+    materialx_direction_to_blender_socket,
     materialx_direction_to_blender_world_socket,
 )
 
@@ -1090,7 +1092,23 @@ def compile_materialx_normalmap(
         for index in range(3)
     ]
     raw = combine_components(context, normal_components, "vector3")
-    return normalize_vector_socket(context, raw)
+    result = normalize_vector_socket(context, raw)
+    if normal_basis_is_world(node):
+        # Consumers treat MaterialX directions as object space, so convert a world-space result.
+        blender_world = materialx_direction_to_blender_socket(context, result)
+        object_space = blender_world_direction_to_materialx_socket(context, blender_world.socket)
+        object_space.semantic = result.semantic
+        return object_space
+    return result
+
+
+def normal_basis_is_world(node: Any) -> bool:
+    input_element = get_input(node, "normal")
+    if input_element is not None and (is_connected(input_element) or input_value(input_element) is not None):
+        return False
+    declaration_input = get_declaration_input(node, "normal")
+    geomprop = (attribute(input_element, "defaultgeomprop") or attribute(declaration_input, "defaultgeomprop") or "").lower()
+    return geomprop == "nworld"
 
 
 def normal_basis_input_socket(
