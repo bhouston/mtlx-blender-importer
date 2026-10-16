@@ -106,6 +106,16 @@ def compile_triplanarprojection(
     configure_image_colorspace(texture_node, node, is_data_image_type(output_type), "filex")
     configure_image_sampling(texture_node, node, set_extension=False)
 
+    # Without a linked vector Blender projects from UVs, which smears the image into streaks.
+    position = None
+    position_input = get_input(node, "position")
+    if position_input is not None and context.compiler is not None:
+        position = context.compiler.compile_input(position_input, scope)
+    if position is None and context.compiler is not None:
+        position = context.compiler.compile_geometry("position")
+    if position is not None:
+        context.material.node_tree.links.new(position.socket, texture_node.inputs["Vector"])
+
     # MaterialX blend is a sharpness exponent while Blender's is a 0..1 softness,
     # so this is an approximation, and only static values are mapped.
     try:
