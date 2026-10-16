@@ -15,6 +15,7 @@ from ..blender_nodes import (
     math_socket,
     mix_component,
     rotate2d_components,
+    vector_math_output,
 )
 from ..document import (
     attribute,
@@ -90,40 +91,62 @@ def compile_triplanarprojection(
     scope: Any | None,
 ) -> CompiledSocket | None:
     output_type = type_name(node) or "color3"
-    image = load_image(context, node, "filex")
-    if image is None:
+    compiler = context.compiler
+    tree = context.material.node_tree
+
+    def geometry_or_input(name: str) -> CompiledSocket | None:
+        element = get_input(node, name)
+        if element is not None and compiler is not None:
+            compiled = compiler.compile_input(element, scope)
+            if compiled is not None:
+                return compiled
+        return compiler.compile_geometry(name) if compiler is not None else None
+
+    position = geometry_or_input("position")
+    normal = geometry_or_input("normal")
+    if position is None or normal is None:
         return None
 
-    for other in ("filey", "filez"):
-        other_value = input_value(get_input(node, other))
-        if other_value and other_value != input_value(get_input(node, "filex")):
-            context.warnings.append(f"{node.getName()}: {other} differs from filex; Blender box projection uses one image.")
+    images = [load_image(context, node, name) for name in ("filex", "filey", "filez")]
+    if any(image is None for image in images):
+        return None
 
-    texture_node = context.material.node_tree.nodes.new(type="ShaderNodeTexImage")
-    texture_node.image = image
-    texture_node.projection = "BOX"
-    texture_node.label = f"MaterialX {node.getName()}"
-    configure_image_colorspace(texture_node, node, is_data_image_type(output_type), "filex")
-    configure_image_sampling(texture_node, node, set_extension=False)
+    # MaterialX projects the X, Y and Z axes using (z, y), (x, z) and (x, y) respectively.
+    p = [component_socket(context, position, index) for index in range(3)]
+    projections = ((p[2], p[1]), (p[0], p[2]), (p[0], p[1]))
 
-    # Without a linked vector Blender projects from UVs, which smears the image into streaks.
-    position = None
-    position_input = get_input(node, "position")
-    if position_input is not None and context.compiler is not None:
-        position = context.compiler.compile_input(position_input, scope)
-    if position is None and context.compiler is not None:
-        position = context.compiler.compile_geometry("position")
-    if position is not None:
-        context.material.node_tree.links.new(position.socket, texture_node.inputs["Vector"])
+    blend = input_socket(context, node, "blend", 1.0, scope)
+    abs_normal = [math_socket(context, "ABSOLUTE", component_socket(context, normal, i), None) for i in range(3)]
+    weights = [math_socket(context, "POWER", value, blend.socket) for value in abs_normal]
+    total = math_socket(context, "ADD", math_socket(context, "ADD", weights[0], weights[1]), weights[2])
+    weights = [math_socket(context, "DIVIDE", weight, total) for weight in weights]
 
-    # MaterialX blend is a sharpness exponent while Blender's is a 0..1 softness,
-    # so this is an approximation, and only static values are mapped.
-    try:
-        texture_node.projection_blend = max(0.0, min(1.0, 1.0 / float(input_value(get_input(node, "blend")) or 1.0)))
-    except (TypeError, ValueError):
-        pass
+    result: bpy.types.NodeSocket | None = None
+    for axis, (image, (u, v)) in enumerate(zip(images, projections)):
+        # MaterialX has its image origin at the top-left, Blender at the bottom-left.
+        flipped_v = math_socket(context, "SUBTRACT", constant_socket(context, 1.0, "float").socket, v)
+        coordinate = combine_components(context, [u, flipped_v, constant_socket(context, 0.0, "float").socket], "vector3")
+        texture_node = tree.nodes.new(type="ShaderNodeTexImage")
+        texture_node.image = image
+        texture_node.label = f"MaterialX {node.getName()} {'XYZ'[axis]}"
+        configure_image_colorspace(texture_node, node, is_data_image_type(output_type), ("filex", "filey", "filez")[axis])
+        configure_image_sampling(texture_node, node, set_extension=False)
+        tree.links.new(coordinate.socket, texture_node.inputs["Vector"])
+        sample = compiled_texture_output(context, texture_node, output_type, output_name)
+        if sample is None:
+            return None
+        if component_count(output_type) == 1:
+            weighted = math_socket(context, "MULTIPLY", sample.socket, weights[axis])
+        else:
+            weight_vector = combine_components(context, [weights[axis]] * 3, "vector3").socket
+            weighted = vector_math_output(context, "MULTIPLY", sample.socket, weight_vector)
+        result = weighted if result is None else (
+            math_socket(context, "ADD", result, weighted)
+            if component_count(output_type) == 1
+            else vector_math_output(context, "ADD", result, weighted)
+        )
 
-    return compiled_texture_output(context, texture_node, output_type, output_name)
+    return CompiledSocket(result, output_type)
 
 
 def register(registry) -> None:
