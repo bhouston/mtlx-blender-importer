@@ -56,8 +56,69 @@ class ImageTexture:
     constant_mask: bpy.types.NodeSocket | None = None
 
 
+_MISSING_IMAGE_DEFAULTS: dict[str, Any] = {
+    "float": 0.0,
+    "color3": (0.5, 0.5, 0.5),
+    "color4": (0.5, 0.5, 0.5, 1.0),
+    "vector2": (0.0, 0.0),
+    "vector3": (0.0, 0.0, 0.0),
+    "vector4": (0.0, 0.0, 0.0, 0.0),
+}
+
+
+def with_missing_image_fallback(handler):
+    """Substitute a neutral constant, with a warning, when an image can't be loaded.
+
+    Without this a single missing texture file aborts the whole material.
+    """
+
+    def wrapper(context: CompileContext, node: Any, output_name: str, scope: Any | None):
+        compiled = handler(context, node, output_name, scope)
+        if compiled is not None:
+            return compiled
+        output_type = type_name(node) or "color3"
+        context.warnings.append(f"{node.getName()}: using a constant in place of the missing image")
+        return constant_socket(context, _MISSING_IMAGE_DEFAULTS.get(output_type, 0.0), output_type)
+
+    return wrapper
+
+
+def compile_triplanarprojection(
+    context: CompileContext,
+    node: Any,
+    output_name: str,
+    scope: Any | None,
+) -> CompiledSocket | None:
+    output_type = type_name(node) or "color3"
+    image = load_image(context, node, "filex")
+    if image is None:
+        return None
+
+    for other in ("filey", "filez"):
+        other_value = input_value(get_input(node, other))
+        if other_value and other_value != input_value(get_input(node, "filex")):
+            context.warnings.append(f"{node.getName()}: {other} differs from filex; Blender box projection uses one image.")
+
+    texture_node = context.material.node_tree.nodes.new(type="ShaderNodeTexImage")
+    texture_node.image = image
+    texture_node.projection = "BOX"
+    texture_node.label = f"MaterialX {node.getName()}"
+    configure_image_colorspace(texture_node, node, is_data_image_type(output_type), "filex")
+    configure_image_sampling(texture_node, node, set_extension=False)
+
+    # MaterialX blend is a sharpness exponent while Blender's is a 0..1 softness,
+    # so this is an approximation, and only static values are mapped.
+    try:
+        texture_node.projection_blend = max(0.0, min(1.0, 1.0 / float(input_value(get_input(node, "blend")) or 1.0)))
+    except (TypeError, ValueError):
+        pass
+
+    return compiled_texture_output(context, texture_node, output_type, output_name)
+
+
 def register(registry) -> None:
-    registry.register_many({"image", "tiledimage"}, compile_image)
+    registry.register_many({"image", "tiledimage"}, with_missing_image_fallback(compile_image))
+    registry.register("triplanarprojection", with_missing_image_fallback(compile_triplanarprojection))
     registry.register("hextiledimage", compile_hextiledimage)
     registry.register("hextilednormalmap", compile_hextilednormalmap)
     registry.register("gltf_image", compile_gltf_image)
@@ -422,8 +483,8 @@ def create_hextiled_image_node(
     return texture_node
 
 
-def load_image(context: CompileContext, image_node: Any) -> bpy.types.Image | None:
-    file_input = get_input(image_node, "file")
+def load_image(context: CompileContext, image_node: Any, input_name: str = "file") -> bpy.types.Image | None:
+    file_input = get_input(image_node, input_name)
     file_value = input_value(file_input) if file_input is not None else None
     if not file_value:
         context.warnings.append(f"Image node {image_node.getName()} has no file input.")
@@ -462,7 +523,12 @@ def has_mx_node(context: CompileContext, node_type: str) -> bool:
     return True
 
 
-def configure_image_colorspace(texture_node: bpy.types.Node, image_node: Any, non_color_default: bool) -> None:
+def configure_image_colorspace(
+    texture_node: bpy.types.Node,
+    image_node: Any,
+    non_color_default: bool,
+    file_input_name: str = "file",
+) -> None:
     image = texture_node.image
     if image is None:
         return
@@ -471,7 +537,7 @@ def configure_image_colorspace(texture_node: bpy.types.Node, image_node: Any, no
         set_image_colorspace(image, ("Non-Color", "Non-Color Data", "Raw"))
         return
 
-    file_input = get_input(image_node, "file")
+    file_input = get_input(image_node, file_input_name)
     color_space = (inherited_attribute(file_input or image_node, "colorspace") or "").lower()
     blender_color_spaces = _MATERIALX_IMAGE_COLORSPACES.get(color_space)
     if blender_color_spaces is not None:

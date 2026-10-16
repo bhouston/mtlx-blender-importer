@@ -67,8 +67,8 @@ Supported MaterialX node categories:
 - Math: `absval`, `acos`, `add`, `asin`, `atan2`, `ceil`, `clamp`, `cos`, `divide`, `div`, `exp`, `floor`, `fract`, `invert`, `length`, `ln`, `magnitude`, `max`, `min`, `modulo`, `mul`, `multiply`, `power`, `range`, `remap`, `rotate2d`, `rotate3d`, `round`, `safepower`, `sign`, `sin`, `smoothstep`, `sqrt`, `subtract`, `tan`.
 - Vector math: `crossproduct`, `distance`, `dotproduct`, `normalize`, `reflect`, `refract`.
 - Structure and channels: `combine2`, `combine3`, `combine4`, `dot`, `extract`, `separate2`, `separate3`, `separate4`.
-- Texture and placement: `bump`, `checkerboard`, `circle`, `gltf_anisotropy_image`, `gltf_colorimage`, `gltf_image`, `gltf_normalmap`, `heighttonormal`, `image`, `normalmap`, `place2d`, `tiledimage`.
-- Geometry: `bitangent`, `frame`, `normal`, `position`, `tangent`, `texcoord`, `time`, `viewdirection`.
+- Texture and placement: `bump`, `checkerboard`, `circle`, `gltf_anisotropy_image`, `gltf_colorimage`, `gltf_image`, `gltf_normalmap`, `heighttonormal`, `image`, `normalmap`, `place2d`, `tiledimage`, `triplanarprojection` (approximated with Blender box projection from `filex`).
+- Geometry: `bitangent`, `frame`, `geompropvalue` (as a Blender geometry attribute), `normal`, `position`, `tangent`, `texcoord`, `time`, `viewdirection`.
 - Procedural noise: `cellnoise2d`, `cellnoise3d`, `fractal2d`, `fractal3d`, `noise2d`, `noise3d`, `unifiednoise2d`, `unifiednoise3d`, `worley2d`, `worley3d`, `worleynoise2d`, `worleynoise3d`.
 - Logic and conditionals: `and`, `ifequal`, `ifgreater`, `ifgreatereq`, `not`, `or`, `switch`, `xor`.
 - Color: `blackbody`, `colorcorrect`, `contrast`, `hsvtorgb`, `luminance`, `rgbtohsv`, `saturate`, `unpremult`.
