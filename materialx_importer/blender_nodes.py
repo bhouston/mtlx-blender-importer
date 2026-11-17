@@ -221,10 +221,16 @@ def component_socket(context: CompileContext, value: CompiledSocket, index: int)
         return value.socket
     if index > 2:
         return constant_socket(context, 1.0, "float").socket
+    key = ("separate", _socket_key(value.socket), index)
+    cached = context.cache.get(key)
+    if cached is not None:
+        return cached
     separate = context.material.node_tree.nodes.new(type="ShaderNodeSeparateXYZ")
     context.material.node_tree.links.new(value.socket, separate.inputs["Vector"])
     output_name = ("X", "Y", "Z")[min(index, 2)]
-    return separate.outputs[output_name]
+    socket = separate.outputs[output_name]
+    context.cache[key] = socket
+    return socket
 
 
 def combine_components(
@@ -242,17 +248,31 @@ def combine_components(
     return CompiledSocket(combine.outputs["Vector"], output_type, components=components)
 
 
+def _socket_key(socket: bpy.types.NodeSocket) -> Any:
+    # Value nodes are keyed by value so repeated constants share downstream nodes.
+    if socket.node.bl_idname == "ShaderNodeValue":
+        return ("value", float(socket.default_value))
+    return socket.as_pointer()
+
+
 def math_socket(
     context: CompileContext,
     operation: str,
     input1: bpy.types.NodeSocket,
     input2: bpy.types.NodeSocket | None,
 ) -> bpy.types.NodeSocket:
+    # Identical math on identical inputs is shared; this removes most duplicate
+    # nodes that the basis conversions and default geometry inputs generate.
+    key = ("math", operation, _socket_key(input1), None if input2 is None else _socket_key(input2))
+    cached = context.cache.get(key)
+    if cached is not None:
+        return cached
     node = context.material.node_tree.nodes.new(type="ShaderNodeMath")
     node.operation = operation
     context.material.node_tree.links.new(input1, node.inputs[0])
     if input2 is not None:
         context.material.node_tree.links.new(input2, node.inputs[1])
+    context.cache[key] = node.outputs[0]
     return node.outputs[0]
 
 

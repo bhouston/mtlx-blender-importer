@@ -15,6 +15,7 @@ from ..blender_nodes import (
     math_socket,
     mix_component,
     rotate2d_components,
+    vector_math_output,
 )
 from ..document import (
     attribute,
@@ -25,6 +26,7 @@ from ..document import (
     inherited_attribute,
     input_value,
     input_value_or_default,
+    is_connected,
     type_name,
 )
 from ..types import CompileContext, CompiledSocket
@@ -32,6 +34,7 @@ from ..values import component_count, parse_float, resolve_asset_path
 from .geometry import (
     blender_world_direction_to_materialx_socket,
     compile_geometry_category,
+    materialx_direction_to_blender_socket,
     materialx_direction_to_blender_world_socket,
 )
 
@@ -56,8 +59,101 @@ class ImageTexture:
     constant_mask: bpy.types.NodeSocket | None = None
 
 
+_MISSING_IMAGE_DEFAULTS: dict[str, Any] = {
+    "float": 0.0,
+    "color3": (0.5, 0.5, 0.5),
+    "color4": (0.5, 0.5, 0.5, 1.0),
+    "vector2": (0.0, 0.0),
+    "vector3": (0.0, 0.0, 0.0),
+    "vector4": (0.0, 0.0, 0.0, 0.0),
+}
+
+
+def with_missing_image_fallback(handler):
+    """Substitute a neutral constant, with a warning, when an image can't be loaded.
+
+    Without this a single missing texture file aborts the whole material.
+    """
+
+    def wrapper(context: CompileContext, node: Any, output_name: str, scope: Any | None):
+        compiled = handler(context, node, output_name, scope)
+        if compiled is not None:
+            return compiled
+        output_type = type_name(node) or "color3"
+        context.warnings.append(f"{node.getName()}: using a constant in place of the missing image")
+        return constant_socket(context, _MISSING_IMAGE_DEFAULTS.get(output_type, 0.0), output_type)
+
+    return wrapper
+
+
+def compile_triplanarprojection(
+    context: CompileContext,
+    node: Any,
+    output_name: str,
+    scope: Any | None,
+) -> CompiledSocket | None:
+    output_type = type_name(node) or "color3"
+    compiler = context.compiler
+    tree = context.material.node_tree
+
+    def geometry_or_input(name: str) -> CompiledSocket | None:
+        element = get_input(node, name)
+        if element is not None and compiler is not None:
+            compiled = compiler.compile_input(element, scope)
+            if compiled is not None:
+                return compiled
+        return compiler.compile_geometry(name) if compiler is not None else None
+
+    position = geometry_or_input("position")
+    normal = geometry_or_input("normal")
+    if position is None or normal is None:
+        return None
+
+    images = [load_image(context, node, name) for name in ("filex", "filey", "filez")]
+    if any(image is None for image in images):
+        return None
+
+    # MaterialX projects the X, Y and Z axes using (z, y), (x, z) and (x, y) respectively.
+    p = [component_socket(context, position, index) for index in range(3)]
+    projections = ((p[2], p[1]), (p[0], p[2]), (p[0], p[1]))
+
+    blend = input_socket(context, node, "blend", 1.0, scope)
+    abs_normal = [math_socket(context, "ABSOLUTE", component_socket(context, normal, i), None) for i in range(3)]
+    weights = [math_socket(context, "POWER", value, blend.socket) for value in abs_normal]
+    total = math_socket(context, "ADD", math_socket(context, "ADD", weights[0], weights[1]), weights[2])
+    weights = [math_socket(context, "DIVIDE", weight, total) for weight in weights]
+
+    result: bpy.types.NodeSocket | None = None
+    for axis, (image, (u, v)) in enumerate(zip(images, projections)):
+        # MaterialX has its image origin at the top-left, Blender at the bottom-left.
+        flipped_v = math_socket(context, "SUBTRACT", constant_socket(context, 1.0, "float").socket, v)
+        coordinate = combine_components(context, [u, flipped_v, constant_socket(context, 0.0, "float").socket], "vector3")
+        texture_node = tree.nodes.new(type="ShaderNodeTexImage")
+        texture_node.image = image
+        texture_node.label = f"MaterialX {node.getName()} {'XYZ'[axis]}"
+        configure_image_colorspace(texture_node, node, is_data_image_type(output_type), ("filex", "filey", "filez")[axis])
+        configure_image_sampling(texture_node, node, set_extension=False)
+        tree.links.new(coordinate.socket, texture_node.inputs["Vector"])
+        sample = compiled_texture_output(context, texture_node, output_type, output_name)
+        if sample is None:
+            return None
+        if component_count(output_type) == 1:
+            weighted = math_socket(context, "MULTIPLY", sample.socket, weights[axis])
+        else:
+            weight_vector = combine_components(context, [weights[axis]] * 3, "vector3").socket
+            weighted = vector_math_output(context, "MULTIPLY", sample.socket, weight_vector)
+        result = weighted if result is None else (
+            math_socket(context, "ADD", result, weighted)
+            if component_count(output_type) == 1
+            else vector_math_output(context, "ADD", result, weighted)
+        )
+
+    return CompiledSocket(result, output_type)
+
+
 def register(registry) -> None:
-    registry.register_many({"image", "tiledimage"}, compile_image)
+    registry.register_many({"image", "tiledimage"}, with_missing_image_fallback(compile_image))
+    registry.register("triplanarprojection", with_missing_image_fallback(compile_triplanarprojection))
     registry.register("hextiledimage", compile_hextiledimage)
     registry.register("hextilednormalmap", compile_hextilednormalmap)
     registry.register("gltf_image", compile_gltf_image)
@@ -422,8 +518,8 @@ def create_hextiled_image_node(
     return texture_node
 
 
-def load_image(context: CompileContext, image_node: Any) -> bpy.types.Image | None:
-    file_input = get_input(image_node, "file")
+def load_image(context: CompileContext, image_node: Any, input_name: str = "file") -> bpy.types.Image | None:
+    file_input = get_input(image_node, input_name)
     file_value = input_value(file_input) if file_input is not None else None
     if not file_value:
         context.warnings.append(f"Image node {image_node.getName()} has no file input.")
@@ -462,7 +558,12 @@ def has_mx_node(context: CompileContext, node_type: str) -> bool:
     return True
 
 
-def configure_image_colorspace(texture_node: bpy.types.Node, image_node: Any, non_color_default: bool) -> None:
+def configure_image_colorspace(
+    texture_node: bpy.types.Node,
+    image_node: Any,
+    non_color_default: bool,
+    file_input_name: str = "file",
+) -> None:
     image = texture_node.image
     if image is None:
         return
@@ -471,7 +572,7 @@ def configure_image_colorspace(texture_node: bpy.types.Node, image_node: Any, no
         set_image_colorspace(image, ("Non-Color", "Non-Color Data", "Raw"))
         return
 
-    file_input = get_input(image_node, "file")
+    file_input = get_input(image_node, file_input_name)
     color_space = (inherited_attribute(file_input or image_node, "colorspace") or "").lower()
     blender_color_spaces = _MATERIALX_IMAGE_COLORSPACES.get(color_space)
     if blender_color_spaces is not None:
@@ -991,7 +1092,23 @@ def compile_materialx_normalmap(
         for index in range(3)
     ]
     raw = combine_components(context, normal_components, "vector3")
-    return normalize_vector_socket(context, raw)
+    result = normalize_vector_socket(context, raw)
+    if normal_basis_is_world(node):
+        # Consumers treat MaterialX directions as object space, so convert a world-space result.
+        blender_world = materialx_direction_to_blender_socket(context, result)
+        object_space = blender_world_direction_to_materialx_socket(context, blender_world.socket)
+        object_space.semantic = result.semantic
+        return object_space
+    return result
+
+
+def normal_basis_is_world(node: Any) -> bool:
+    input_element = get_input(node, "normal")
+    if input_element is not None and (is_connected(input_element) or input_value(input_element) is not None):
+        return False
+    declaration_input = get_declaration_input(node, "normal")
+    geomprop = (attribute(input_element, "defaultgeomprop") or attribute(declaration_input, "defaultgeomprop") or "").lower()
+    return geomprop == "nworld"
 
 
 def normal_basis_input_socket(

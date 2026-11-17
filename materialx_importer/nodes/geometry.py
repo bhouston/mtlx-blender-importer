@@ -12,7 +12,7 @@ from ..blender_nodes import (
     math_socket,
     vector_math_output,
 )
-from ..document import input_value_or_default
+from ..document import get_input, input_value, input_value_or_default, type_name
 from ..types import CompileContext, CompiledSocket
 
 
@@ -20,6 +20,21 @@ def register(registry) -> None:
     registry.register_many({"texcoord", "position", "normal", "tangent", "bitangent", "viewdirection"}, compile_geometry)
     registry.register("frame", compile_frame)
     registry.register("time", compile_time)
+    registry.register("geompropvalue", compile_geompropvalue)
+
+
+def compile_geompropvalue(context: CompileContext, node: Any, output_name: str, scope: Any | None) -> CompiledSocket | None:
+    output_type = type_name(node) or "color3"
+    geomprop = input_value(get_input(node, "geomprop")) or ""
+    attribute = context.material.node_tree.nodes.new(type="ShaderNodeAttribute")
+    attribute.attribute_type = "GEOMETRY"
+    attribute.attribute_name = str(geomprop)
+    attribute.label = f"MaterialX {node.getName()}"
+    if output_type == "float":
+        return CompiledSocket(attribute.outputs["Fac"], "float")
+    if output_type in {"vector2", "vector3"}:
+        return CompiledSocket(attribute.outputs["Vector"], "vector3")
+    return CompiledSocket(attribute.outputs["Color"], "color3")
 
 
 def compile_geometry(context: CompileContext, node: Any, output_name: str, scope: Any | None) -> CompiledSocket | None:
@@ -29,6 +44,17 @@ def compile_geometry(context: CompileContext, node: Any, output_name: str, scope
 
 
 def compile_geometry_category(context: CompileContext, category: str, space: str = "object") -> CompiledSocket | None:
+    # Geometry inputs are shared within a material, since their basis conversions are costly.
+    key = ("geometry", category, space)
+    cached = context.cache.get(key)
+    if cached is None:
+        cached = _compile_geometry_category(context, category, space)
+        if cached is not None:
+            context.cache[key] = cached
+    return cached
+
+
+def _compile_geometry_category(context: CompileContext, category: str, space: str = "object") -> CompiledSocket | None:
     nodes = context.material.node_tree.nodes
     if category == "texcoord":
         node = nodes.new(type="ShaderNodeTexCoord")
@@ -54,8 +80,14 @@ def compile_geometry_category(context: CompileContext, category: str, space: str
         socket = blender_tangent_socket(context)
         if socket is None:
             return None
-        if space != "world":
-            socket = blender_world_to_object_direction_socket(context, socket, "VECTOR")
+        # Blender's Tangent node outputs object space, unlike the world-space Normal.
+        if space == "world":
+            transform = nodes.new(type="ShaderNodeVectorTransform")
+            transform.vector_type = "VECTOR"
+            transform.convert_from = "OBJECT"
+            transform.convert_to = "WORLD"
+            context.material.node_tree.links.new(socket, transform.inputs["Vector"])
+            socket = transform.outputs["Vector"]
         return blender_direction_to_materialx_socket(context, socket)
     if category == "bitangent":
         normal = compile_geometry_category(context, "normal", space)
